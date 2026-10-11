@@ -1,0 +1,139 @@
+package game
+
+import (
+	"math"
+	"temp-ws/internal/music"
+	"time"
+	"unicode/utf8"
+)
+
+type Game struct {
+	rounds []Round
+	currentRound int
+	scores map[string]int
+	roundDuration time.Duration
+	roundStartedAt time.Time
+	roundTimer *time.Timer
+}
+
+func (g *Game) Scores()map[string]int {
+	copied := make(map[string]int, len(g.scores))
+    for k, v := range g.scores {
+        copied[k] = v
+    }
+    return copied
+}
+
+func (g *Game) CurrentRound()int {
+	return g.currentRound + 1
+}
+
+func (g *Game) GetRoundStartInfo() RoundStartInfo {
+	 r := g.rounds[g.currentRound]
+
+	 return RoundStartInfo { RoundNumber: g.currentRound + 1, 
+		TotalRounds: len(g.rounds), 
+		LetterCards: r.LetterCards, 
+		AnswerLength: utf8.RuneCountInString(r.Answer) }
+}
+
+func (g *Game) CurrentISRC()string {
+	return g.rounds[g.currentRound].Song.ISRC
+}
+
+func (g *Game) CurrentStartTime() int {
+	return g.rounds[g.currentRound].StartTime
+}
+
+func (g *Game) CurrentAnswer() string {
+	return g.rounds[g.currentRound].Answer
+}
+
+func (g *Game) IsPlaying()bool {
+	return g.rounds[g.currentRound].State == Playing
+}
+
+func (g *Game) StartRound(onTimeout func()) {
+	g.rounds[g.currentRound].State = Playing
+	g.roundStartedAt = time.Now()
+	g.roundTimer = time.AfterFunc(g.roundDuration, onTimeout)
+}
+
+func (g *Game) EndRound(winnerID string) {
+	if g.roundTimer != nil {
+		g.roundTimer.Stop()
+	}
+
+	g.rounds[g.currentRound].State = Result
+	g.rounds[g.currentRound].Winner = winnerID
+	
+	if winnerID != "" {
+		g.scores[winnerID] += 1
+	}
+}
+
+func (g *Game) Winner() string {
+    var maxScore int
+    var winner string
+    
+    for id, score := range g.scores {
+        if score > maxScore {
+            maxScore = score
+            winner = id
+        }
+    }
+    
+    return winner
+}
+
+func (g *Game) NextRound()bool {
+	if len(g.rounds) <= g.currentRound+1 { return false }
+
+	g.currentRound += 1
+	return true
+}
+
+func (g *Game) SubmitAnswer(input string) bool {
+    return Matches(input, g.rounds[g.currentRound].Answer)
+}
+
+func (g *Game) RemainingTime()int {
+	elapsed := time.Since(g.roundStartedAt)
+	remainingTime := g.roundDuration - elapsed
+
+	if remainingTime <= 0 { return 0 }
+
+	return int(math.Ceil(remainingTime.Seconds()))
+}
+
+func (g *Game) StopTimer() {
+	if g.roundTimer != nil {
+		g.roundTimer.Stop()
+	}
+}
+
+func NewGame(playerIDs []string, songs []music.Song, timeLimit int) *Game {
+	scores := make(map[string]int)
+
+	for _, id := range playerIDs {
+		scores[id] = 0
+	}
+
+	rounds := make([]Round, len(songs))
+
+	for i, song := range songs {
+		title := PrimaryTitle(song.Title)
+
+		rounds[i] = Round {
+			Answer: title, 
+			LetterCards: generateLetterCards(title),
+			Song: song,
+			State: Idle,
+			StartTime: generateStartTime(song.Duration, timeLimit),
+		}
+	}
+
+	roundDuration := time.Duration(timeLimit) * time.Second
+
+	return &Game { rounds: rounds, currentRound: 0, scores: scores, roundDuration: roundDuration }
+}
