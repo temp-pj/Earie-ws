@@ -1,7 +1,7 @@
 # Go 서버 랜덤 매칭 작업 및 병렬 실행 v1.1
 
 실행 범위는 Go 서버만이다. wire 계약 v1은 유지하고 문서 실행 범위만 v1.1로 변경한다. iOS 이슈·브랜치·구현은 이번에 시작하지 않는다. T0는 미결정 설계를 미루는 작업이 아니라 공통 타입/fixture의 작은 선행 PR이다.
-GitHub 이슈·PR·브랜치는 아직 만들지 않았다. 아래 작업 ID는 이슈 번호가 아니다.
+상위 이슈: [#29](https://github.com/temp-pj/Earie-ws/issues/29). 기능 통합 브랜치 feature/random-matchmaking과 서버 하위 이슈를 생성했다. 구현 PR/하위 작업 브랜치는 아직 만들지 않았다. 작업 ID와 실제 이슈 번호는 아래 표에서 대응한다.
 
 ## 브랜치 절차
 
@@ -14,6 +14,8 @@ GitHub 이슈·PR·브랜치는 아직 만들지 않았다. 아래 작업 ID는 
 7. T9 서버 독립 검증 후 서버 feature/random-matchmaking에서 develop으로 최종 PR. iOS 연동·실음원 출시 완료로 표현하지 않는다. 자동 배포/병합은 별도 권한이다.
 
 ## 의존성과 소유권
+
+GitHub native sub-issues와 blocked-by 관계를 연결했다. T0 #30만 착수 가능하며 T1 #31/T2 #32는 T0 PR 병합 후 병렬 실행한다. 이슈가 닫혔는지만 보지 말고 선행 PR의 통합 브랜치 병합 SHA를 확인한다.
 
 ```mermaid
 flowchart TD
@@ -29,14 +31,14 @@ flowchart TD
 
 | ID | 저장소 | 선행 병합/게이트 | 브랜치 제안 | 이슈 |
 |---|---|---|---|---|
-| T0 | Go | 명세 통합 브랜치 커밋 | codex/matchmaking-contract | 미생성 |
-| T1 | Go | T0 | codex/matchmaking-session | 미생성 |
-| T2 | Go | T0 | codex/matchmaking-criteria | 미생성 |
-| T3 | Go | T1,T2 | codex/matchmaking-assignment | 미생성 |
-| T4 | Go | T3 | codex/matchmaking-cancellation | 미생성 |
-| T7 | Go | T4 | codex/matchmaking-room-lifecycle | 미생성 |
+| T0 | Go | 명세 통합 브랜치 커밋 | codex/matchmaking-contract | [#30](https://github.com/temp-pj/Earie-ws/issues/30) |
+| T1 | Go | T0 | codex/matchmaking-session | [#31](https://github.com/temp-pj/Earie-ws/issues/31) |
+| T2 | Go | T0 | codex/matchmaking-criteria | [#32](https://github.com/temp-pj/Earie-ws/issues/32) |
+| T3 | Go | T1,T2 | codex/matchmaking-assignment | [#33](https://github.com/temp-pj/Earie-ws/issues/33) |
+| T4 | Go | T3 | codex/matchmaking-cancellation | [#34](https://github.com/temp-pj/Earie-ws/issues/34) |
+| T7 | Go | T4 | codex/matchmaking-room-lifecycle | [#35](https://github.com/temp-pj/Earie-ws/issues/35) |
 | T10 | 데이터/Go, 별도 출시 준비 | T0 및 데이터 접근 | codex/matchmaking-catalog | 이번 필수 이슈에서 제외 |
-| T9 | Go | T7 | codex/matchmaking-integration | 미생성 |
+| T9 | Go | T7 | codex/matchmaking-integration | [#36](https://github.com/temp-pj/Earie-ws/issues/36) |
 
 코드 파일 소유권은 아래 범위로 제한한다. 병렬 작업 중 공유 계약 변경이 필요하면 코디네이터가 작은 선행 PR로 조정한다. 각 에이전트가 동일 선언을 따로 고치지 않는다.
 

@@ -12,7 +12,7 @@
 
 ## 현재 산출물과 다음 행동
 
-명세와 서버 AGENTS.md/CLAUDE.md가 로컬에 있다. 이 문서 작성 과정에서 커밋·push·이슈·브랜치·Orca 실행은 하지 않았다. 실제 상태는 각 시작 시 git/GitHub에서 재확인한다.
+서버 기본 지침은 develop에 반영되어 있다. feature/random-matchmaking에 명세를 커밋·push했고 상위 이슈 [#29](https://github.com/temp-pj/Earie-ws/issues/29) 및 하위 이슈 #30~#36을 생성했다. 실제 하위 이슈/blocked-by 관계를 설정했다. Orca 구현 실행·구현 PR·하위 작업 브랜치는 아직 시작하지 않았다. 아래 1~3번 준비는 완료됐으며 다음은 4번 T0 실행이다. 실제 상태는 시작 시 GitHub에서 재확인한다.
 
 1. 이 채팅에서 서버 AGENTS.md/CLAUDE.md만 develop 커밋·push 요청. 보호 규칙이 요구할 때만 설정 PR을 쓴다.
 2. 이 채팅에서 서버 상위 이슈 및 feature/random-matchmaking 생성, 명세 커밋·push 요청.
@@ -30,7 +30,7 @@
 원본: Earie-ws의 docs/specs/random-matchmaking. iOS 저장소의 기존 안내는 후속 개발용이며 이번에 앱 작업을 시작하라는 의미가 아니다.
 서버 저장소: https://github.com/temp-pj/Earie-ws (로컬 temp-ws).
 기능 정책은 requirements, JSON은 protocol, 구조는 design, 실행 범위는 tasks가 담당한다. 작업자가 계약을 단독 변경하지 않는다.
-계약 커밋 SHA는 첫 문서 커밋 후 작업 프롬프트에 기록한다. GitHub 이슈가 실행 상태 원본이다.
+초기 구현 계약 커밋 SHA는 7683c2507dad2c61da83bbede40651a3330c6fde다. 실행 시 최신 통합 브랜치 SHA도 함께 기록한다. GitHub 이슈가 실행 상태 원본이다.
 
 ## 서버 완료와 출시를 구분
 
