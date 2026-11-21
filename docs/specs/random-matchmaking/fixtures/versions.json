@@ -1,0 +1,11 @@
+[
+  {"value":"test-v1","valid":true},
+  {"value":"A_z.0-9","valid":true},
+  {"value":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","valid":true},
+  {"value":"","valid":false},
+  {"value":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","valid":false},
+  {"value":"한글","valid":false},
+  {"value":"test v1","valid":false},
+  {"value":"test/v1","valid":false},
+  {"value":"test\nv1","valid":false}
+]

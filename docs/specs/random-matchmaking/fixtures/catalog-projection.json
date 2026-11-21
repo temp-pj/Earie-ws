@@ -1,0 +1,87 @@
+{
+  "version": "test-v1",
+  "decades": [
+    "2010s",
+    "2020s"
+  ],
+  "genres": [
+    {
+      "id": "korean_ballad",
+      "label": "Synthetic ballad (test only)"
+    },
+    {
+      "id": "synthetic_pop",
+      "label": "Synthetic pop (test only)"
+    }
+  ],
+  "allowedRequests": [
+    {
+      "decade": "any",
+      "artistType": "any",
+      "gender": "any",
+      "genre": "any"
+    },
+    {
+      "decade": "all",
+      "artistType": "any",
+      "gender": "any",
+      "genre": "any"
+    },
+    {
+      "decade": "2010s",
+      "artistType": "any",
+      "gender": "any",
+      "genre": "korean_ballad"
+    },
+    {
+      "decade": "2010s",
+      "artistType": "solo",
+      "gender": "female",
+      "genre": "korean_ballad"
+    },
+    {
+      "decade": "2020s",
+      "artistType": "group",
+      "gender": "male",
+      "genre": "synthetic_pop"
+    }
+  ],
+  "pools": [
+    {
+      "category": {
+        "decade": "all",
+        "artistType": "all",
+        "gender": "all",
+        "genre": "all"
+      },
+      "songCount": 20
+    },
+    {
+      "category": {
+        "decade": "2010s",
+        "artistType": "all",
+        "gender": "all",
+        "genre": "korean_ballad"
+      },
+      "songCount": 10
+    },
+    {
+      "category": {
+        "decade": "2010s",
+        "artistType": "solo",
+        "gender": "female",
+        "genre": "korean_ballad"
+      },
+      "songCount": 10
+    },
+    {
+      "category": {
+        "decade": "2020s",
+        "artistType": "group",
+        "gender": "male",
+        "genre": "synthetic_pop"
+      },
+      "songCount": 10
+    }
+  ]
+}
