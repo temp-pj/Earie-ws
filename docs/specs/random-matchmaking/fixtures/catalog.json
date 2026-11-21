@@ -1,0 +1,141 @@
+{
+  "version": "test-v1",
+  "decades": [
+    "2010s",
+    "2020s"
+  ],
+  "genres": [
+    {
+      "id": "korean_ballad",
+      "label": "Synthetic ballad (test only)"
+    },
+    {
+      "id": "synthetic_pop",
+      "label": "Synthetic pop (test only)"
+    }
+  ],
+  "allowedRequests": [
+    {
+      "decade": "any",
+      "artistType": "any",
+      "gender": "any",
+      "genre": "any"
+    },
+    {
+      "decade": "all",
+      "artistType": "any",
+      "gender": "any",
+      "genre": "any"
+    },
+    {
+      "decade": "2010s",
+      "artistType": "any",
+      "gender": "any",
+      "genre": "korean_ballad"
+    },
+    {
+      "decade": "2010s",
+      "artistType": "solo",
+      "gender": "female",
+      "genre": "korean_ballad"
+    },
+    {
+      "decade": "2020s",
+      "artistType": "group",
+      "gender": "male",
+      "genre": "synthetic_pop"
+    }
+  ],
+  "pools": [
+    {
+      "category": {
+        "decade": "all",
+        "artistType": "all",
+        "gender": "all",
+        "genre": "all"
+      },
+      "songIDs": [
+        "ZZTST2600001",
+        "ZZTST2600002",
+        "ZZTST2600003",
+        "ZZTST2600004",
+        "ZZTST2600005",
+        "ZZTST2600006",
+        "ZZTST2600007",
+        "ZZTST2600008",
+        "ZZTST2600009",
+        "ZZTST2600010",
+        "ZZTST2600011",
+        "ZZTST2600012",
+        "ZZTST2600013",
+        "ZZTST2600014",
+        "ZZTST2600015",
+        "ZZTST2600016",
+        "ZZTST2600017",
+        "ZZTST2600018",
+        "ZZTST2600019",
+        "ZZTST2600020"
+      ]
+    },
+    {
+      "category": {
+        "decade": "2010s",
+        "artistType": "all",
+        "gender": "all",
+        "genre": "korean_ballad"
+      },
+      "songIDs": [
+        "ZZTST2600001",
+        "ZZTST2600002",
+        "ZZTST2600003",
+        "ZZTST2600004",
+        "ZZTST2600005",
+        "ZZTST2600006",
+        "ZZTST2600007",
+        "ZZTST2600008",
+        "ZZTST2600009",
+        "ZZTST2600010"
+      ]
+    },
+    {
+      "category": {
+        "decade": "2010s",
+        "artistType": "solo",
+        "gender": "female",
+        "genre": "korean_ballad"
+      },
+      "songIDs": [
+        "ZZTST2600001",
+        "ZZTST2600002",
+        "ZZTST2600003",
+        "ZZTST2600004",
+        "ZZTST2600005",
+        "ZZTST2600006",
+        "ZZTST2600007",
+        "ZZTST2600008",
+        "ZZTST2600009",
+        "ZZTST2600010"
+      ]
+    },
+    {
+      "category": {
+        "decade": "2020s",
+        "artistType": "group",
+        "gender": "male",
+        "genre": "synthetic_pop"
+      },
+      "songIDs": [
+        "ZZTST2600011",
+        "ZZTST2600012",
+        "ZZTST2600013",
+        "ZZTST2600014",
+        "ZZTST2600015",
+        "ZZTST2600016",
+        "ZZTST2600017",
+        "ZZTST2600018",
+        "ZZTST2600019",
+        "ZZTST2600020"
+      ]
+    }
+  ]
+}
