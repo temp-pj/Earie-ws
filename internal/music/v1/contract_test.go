@@ -75,7 +75,8 @@ func jsonValue(raw []byte) (any, error) {
 
 // exactDTO is a fixture audit, NOT the future production catalog decoder. Public
 // fixtures intentionally contain exactly the documented keys. Roundtrip equality
-// catches missing/null keys, wrong types and accidental projection answer leaks.
+// catches missing keys, wrong types and accidental projection answer leaks.
+// Nil slices preserve JSON null, so array contracts need explicit value checks.
 func exactDTO(raw []byte, target any) error {
 	if err := json.Unmarshal(raw, target); err != nil {
 		return err
@@ -221,12 +222,47 @@ func TestSyntheticCatalogContract(t *testing.T) {
 	if !slices.Equal(catalog.Decades, []string{"2010s", "2020s"}) {
 		t.Fatal("display order changed")
 	}
-	var unavailable music.Catalog
-	if err := exactDTO(read(t, "catalog-unavailable.json"), &unavailable); err != nil {
+	if err := auditUnavailable(read(t, "catalog-unavailable.json")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func auditUnavailable(raw []byte) error {
+	var unavailable music.Catalog
+	if err := exactDTO(raw, &unavailable); err != nil {
+		return err
+	}
+	if unavailable.Decades == nil || unavailable.Genres == nil || unavailable.AllowedRequests == nil || unavailable.Pools == nil {
+		return fmt.Errorf("unavailable catalog arrays must not be null")
+	}
 	if len(unavailable.Decades)+len(unavailable.Genres)+len(unavailable.AllowedRequests)+len(unavailable.Pools) != 0 {
-		t.Fatal("unavailable catalog must have empty arrays")
+		return fmt.Errorf("unavailable catalog must have empty arrays")
+	}
+	return nil
+}
+
+func TestUnavailableCatalogRejectsNullArrays(t *testing.T) {
+	raw := read(t, "catalog-unavailable.json")
+	t.Run("empty arrays remain valid", func(t *testing.T) {
+		if err := auditUnavailable(raw); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, field := range []string{"decades", "genres", "allowedRequests", "pools"} {
+		t.Run(field, func(t *testing.T) {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			fields[field] = json.RawMessage("null")
+			mutated, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := auditUnavailable(mutated); err == nil {
+				t.Fatalf("null %s array accepted", field)
+			}
+		})
 	}
 }
 
