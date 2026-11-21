@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -12,7 +13,9 @@ import (
 	_ "github.com/lib/pq"
 
 	"temp-ws/internal/client"
+	"temp-ws/internal/matchmaking"
 	message "temp-ws/internal/message/v1"
+	"temp-ws/internal/music"
 	"temp-ws/internal/room"
 	"temp-ws/internal/session"
 )
@@ -21,12 +24,13 @@ func main() {
 	db := mustConnectDB()
 	defer func() { _ = db.Close() }()
 
-	ctx := context.Background()
-	events := session.NewEventQueue(ctx, 256)
-	gateway := room.NewGateway(ctx, events)
-	registry := session.NewRegistry(ctx, gateway, nil, nil)
-	// T3 injects the match handler and ordered event consumer. No room is
-	// allocated by a connection, and the old direct-room endpoint is disabled.
+	catalog, err := loadMatchingCatalog(os.Getenv("CATALOG_PATH"), os.Getenv("SONG_MANIFEST_PATH"))
+	if err != nil {
+		log.Fatal("매칭 카탈로그 로드 실패: CATALOG_PATH 및 SONG_MANIFEST_PATH의 검증된 파일이 필요합니다")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	registry, _ := newMatchingRegistry(ctx, catalog)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", handleWebSocket(registry))
@@ -35,6 +39,30 @@ func main() {
 	if err := http.ListenAndServe(":8080", mux); err != nil {
 		log.Fatal("서버 에러:", err)
 	}
+}
+
+// Both production and socket tests use this assembly. Synthetic fixtures are
+// supplied by tests only; missing deployment data never falls back to test-v1.
+func newMatchingRegistry(ctx context.Context, catalog *music.CatalogStore) (*session.Registry, <-chan struct{}) {
+	events := session.NewEventQueue(ctx, 256)
+	gateway := room.NewGateway(ctx, events)
+	matcher := matchmaking.New(ctx, gateway, catalog, events.Batches())
+	go matcher.Run()
+	return matcher.Registry(), matcher.Done()
+}
+
+func loadMatchingCatalog(catalogPath, manifestPath string) (*music.CatalogStore, error) {
+	catalog, err := os.Open(catalogPath)
+	if err != nil {
+		return nil, fmt.Errorf("open catalog: %w", err)
+	}
+	defer func() { _ = catalog.Close() }()
+	manifest, err := os.Open(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("open manifest: %w", err)
+	}
+	defer func() { _ = manifest.Close() }()
+	return music.LoadCatalog(catalog, manifest)
 }
 
 func mustConnectDB() *sql.DB {
