@@ -7,16 +7,15 @@ import (
 
 func (m *Matchmaker) apply(batch sc.EventBatch) {
 	room := m.rooms[batch.RoomID]
-	if room == nil || batch.Revision <= room.snapshot.Revision {
+	if room == nil || room.closing || batch.Revision <= room.snapshot.Revision {
 		return
 	}
-	// A closing room still needs removal/Closed results consumed, but cannot
-	// regain eligibility from a late snapshot or approve another admission.
-	if room.public && !room.closing {
+	if room.public {
 		clear(m.failedPairs)
 	}
 	room.snapshot = batch.Snapshot
 	var approved []sc.Member
+	var removed []*request
 	forwarded := batch
 	forwarded.Events = make([]sc.Event, 0, len(batch.Events))
 	for _, event := range batch.Events {
@@ -26,6 +25,7 @@ func (m *Matchmaker) apply(batch sc.EventBatch) {
 			if a == nil || b == nil {
 				continue
 			}
+			delete(room.deadlines, e.Token)
 			if e.Rejection != sc.AdmissionAccepted {
 				m.failedPairs[pairKey(a, b)] = true
 				for _, r := range []*request{a, b} {
@@ -45,6 +45,7 @@ func (m *Matchmaker) apply(batch sc.EventBatch) {
 			if r == nil {
 				continue
 			}
+			delete(room.deadlines, e.Token)
 			if e.Rejection != sc.AdmissionAccepted {
 				m.retry(r, batch)
 				continue
@@ -53,39 +54,54 @@ func (m *Matchmaker) apply(batch sc.EventBatch) {
 				approved = append(approved, r.member)
 			}
 		case sc.RemovalResult:
-			if cmd, ok := room.cleanup[e.Token]; ok && cmd.PlayerID == e.PlayerID && cmd.RequestID == e.RequestID {
-				delete(room.cleanup, e.Token)
+			cmd, ok := room.cleanup[e.Token]
+			if !ok || cmd.PlayerID != e.PlayerID || cmd.RequestID != e.RequestID {
+				continue
 			}
-			for cid, r := range m.requests {
-				if r.roomID == batch.RoomID && r.member.PlayerID == e.PlayerID && r.member.RequestID == e.RequestID && r.state == sc.RequestMatched {
-					delete(m.requests, cid)
-				}
+			delete(room.cleanup, e.Token)
+			delete(room.deadlines, e.Token)
+			if r := m.memberRequest(cmd); r != nil && r.token == 0 {
+				removed = append(removed, r)
 			}
 		case sc.Published:
-			if e.Token == room.publishToken && e.Token != 0 && !room.closing {
+			if e.Token == room.publishToken && e.Token != 0 {
+				delete(room.deadlines, e.Token)
 				room.public = true
 				clear(m.failedPairs)
 			}
 		case sc.Closed:
-			room.closing = true
+			m.closeRoom(room)
+			continue
 		}
 		forwarded.Events = append(forwarded.Events, event)
 	}
-	// Registry applies all WELCOME and wire messages together under its FIFO
-	// lock. Failed sends/disconnected connections become scoped cleanup, and a
-	// private room cannot publish until every such removal has completed.
+	// Apply clears Registry membership before cancellation completion can release
+	// the next request. Admissions denied above become scoped cleanup operations.
 	for _, cmd := range m.registry.Apply(forwarded, approved) {
-		room.cleanup[cmd.Token] = cmd
-		if err := m.gateway.Remove(m.ctx, cmd); err != nil {
-			m.closeRoom(room)
-		}
+		m.remove(room, cmd)
+	}
+	for _, r := range removed {
+		m.registry.ClearMembership(batch.RoomID, r.member)
+		r.roomID, r.cleanupPending = "", false
+		r.state = sc.RequestCancelled
+		m.finishCancelled(r)
 	}
 	m.publish(room)
 }
 
 func (m *Matchmaker) admit(r *request, room *trackedRoom, admission sc.Admission) bool {
-	if r.disconnected || room.closing {
-		delete(m.requests, r.connection.ID)
+	r.token = 0
+	select {
+	case <-room.handle.Done:
+		m.closeRoom(room)
+	default:
+	}
+	if room.closing {
+		r.cleanupPending = true
+		return false
+	}
+	if r.disconnected || r.state == sc.RequestCancelled {
+		r.state, r.cleanupPending = sc.RequestCancelled, true
 		return false
 	}
 	r.state = sc.RequestMatched
@@ -95,9 +111,12 @@ func (m *Matchmaker) admit(r *request, room *trackedRoom, admission sc.Admission
 }
 
 func (m *Matchmaker) retry(r *request, batch sc.EventBatch) {
-	r.rejected[batch.RoomID] = batch.Revision
-	r.state, r.roomID, r.token = sc.RequestWaiting, "", 0
-	if r.disconnected {
-		delete(m.requests, r.connection.ID)
+	r.roomID, r.token, r.cleanupPending = "", 0, false
+	if r.state == sc.RequestCancelled || r.disconnected {
+		r.state = sc.RequestCancelled
+		m.finishCancelled(r)
+		return
 	}
+	r.rejected[batch.RoomID] = batch.Revision
+	r.state = sc.RequestWaiting
 }

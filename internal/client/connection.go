@@ -16,16 +16,18 @@ import (
 // Room membership never closes its queue or its context. Legacy Client remains
 // available to old game tests until T7 removes the obsolete protocol.
 type Connection struct {
-	ID      string
-	conn    socket
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	queue   [][]byte
-	bytes   int
-	wake    chan struct{}
-	done    chan struct{}
-	runOnce sync.Once
+	ID         string
+	conn       socket
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	queue      [][]byte
+	bytes      int
+	wake       chan struct{}
+	done       chan struct{}
+	runOnce    sync.Once
+	policy     chan struct{}
+	policyOnce sync.Once
 }
 
 // socket keeps deadline/cancellation tests independent of network timing.
@@ -40,7 +42,7 @@ type socket interface {
 
 func NewConnection(ctx context.Context, conn *websocket.Conn) *Connection {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Connection{ID: uuid.NewString(), conn: conn, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
+	return &Connection{ID: uuid.NewString(), conn: conn, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), policy: make(chan struct{}), done: make(chan struct{})}
 }
 func (c *Connection) Context() context.Context { return c.ctx }
 func (c *Connection) Done() <-chan struct{}    { return c.done }
@@ -86,6 +88,11 @@ func (c *Connection) take() []byte {
 }
 func (c *Connection) Stop() { c.cancel() }
 
+// RejectPolicy enqueues a close for the writer, never blocking the caller.
+func (c *Connection) RejectPolicy() {
+	c.policyOnce.Do(func() { close(c.policy) })
+}
+
 // Run blocks until every connection worker has exited. Handler must enqueue
 // without waiting for an actor; failure closes the connection for cleanup.
 func (c *Connection) Run(handler func(message.Message) error) {
@@ -119,6 +126,14 @@ func (c *Connection) run(handler func(message.Message) error) {
 			break
 		}
 		if err := handler(msg); err != nil {
+			// The Registry may already have removed a policy-rejected session
+			// while another frame was in flight. Let the writer send 1008
+			// before reader teardown closes the underlying socket.
+			select {
+			case <-c.policy:
+				<-c.ctx.Done()
+			default:
+			}
 			break
 		}
 	}
@@ -132,6 +147,12 @@ func (c *Connection) run(handler func(message.Message) error) {
 func (c *Connection) writeLoop() {
 	defer c.cancel()
 	for {
+		select {
+		case <-c.policy:
+			_ = c.conn.Close(websocket.StatusPolicyViolation, "request policy violation")
+			return
+		default:
+		}
 		if c.ctx.Err() != nil {
 			return
 		}
@@ -146,6 +167,9 @@ func (c *Connection) writeLoop() {
 		}
 		select {
 		case <-c.ctx.Done():
+			return
+		case <-c.policy:
+			_ = c.conn.Close(websocket.StatusPolicyViolation, "request policy violation")
 			return
 		case <-c.wake:
 		}
