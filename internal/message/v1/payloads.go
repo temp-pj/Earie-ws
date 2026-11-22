@@ -1,5 +1,5 @@
-// Package message contains the opt-in WebSocket v1 contract. Existing runtime
-// imports keep using internal/message until T1/T7 migrate them.
+// Package message contains the WebSocket v1 contract. The pre-v1 protocol
+// package was removed with the legacy Room/Client runtime (T7).
 package message
 
 import music "temp-ws/internal/music/v1"
