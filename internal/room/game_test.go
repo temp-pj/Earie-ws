@@ -619,3 +619,101 @@ func TestCloseDuringPlayingStopsTimer(t *testing.T) {
 		t.Fatal("timer survived Done")
 	}
 }
+
+func kickMessage(roomID, target string) message.Message {
+	return message.Message{Type: message.TypeKickPlayer, Payload: &message.KickPlayerPayload{RoomID: roomID, TargetPlayerID: target}}
+}
+
+func TestKickPlayer(t *testing.T) {
+	t.Run("only host kicks another current member", func(t *testing.T) {
+		gr := newGameRoom(t, 3)
+		host, guest, third := gr.members[0], gr.members[1], gr.members[2]
+		// Non-host, self-target, unknown target and stale host membership: no-ops.
+		gr.command(guest, kickMessage(gr.h.RoomID, third.PlayerID))
+		gr.command(host, kickMessage(gr.h.RoomID, host.PlayerID))
+		gr.command(host, kickMessage(gr.h.RoomID, testMember(9).PlayerID))
+		stale := host
+		stale.RequestID = guest.RequestID
+		gr.command(stale, kickMessage(gr.h.RoomID, third.PlayerID))
+		gr.command(host, kickMessage(gr.h.RoomID, third.PlayerID))
+		b := gr.batch()
+		wires := wireMessages(b)
+		if len(wires) != 2 || wires[0].Type != message.TypePlayerKicked || wires[1].Type != message.TypePlayerLeft || b.Snapshot.PlayerCount != 2 {
+			t.Fatalf("%+v", b)
+		}
+		kicked := wireOf(t, b, message.TypePlayerKicked)
+		left := wireOf(t, b, message.TypePlayerLeft)
+		if len(kicked.Recipients) != 1 || kicked.Recipients[0] != third || len(left.Recipients) != 2 || left.Message.Payload.(message.PlayerLeftPayload).PlayerID != third.PlayerID {
+			t.Fatalf("recipients: %+v / %+v", kicked.Recipients, left.Recipients)
+		}
+		// The owner's follow-up scoped Remove confirms the already-absent member.
+		r := gr.leave(third)
+		if len(r.Events) != 1 || r.Snapshot.PlayerCount != 2 {
+			t.Fatalf("%+v", r)
+		}
+	})
+	t.Run("kick during playing reuses departure handling", func(t *testing.T) {
+		gr := newGameRoom(t, 2)
+		gr.start()
+		gr.command(gr.members[0], kickMessage(gr.h.RoomID, gr.members[1].PlayerID))
+		b := gr.batch()
+		if p := wireOf(t, b, message.TypeGameAborted).Message.Payload.(message.GameAbortedPayload); p.Reason != message.InsufficientPlayers {
+			t.Fatal(p)
+		}
+		if gr.clock.active() != 0 {
+			t.Fatal("timer survived abort")
+		}
+	})
+}
+
+func TestRoundDeadlineIsAbsolute(t *testing.T) {
+	t.Run("delayed tick is capped at the deadline", func(t *testing.T) {
+		gr := newGameRoom(t, 2)
+		gr.start()
+		gr.readyAll(1)
+		// One tick serviced late at 29.5s: next timer must target 30.0s, not 30.5s.
+		if gr.clock.Advance(29500*time.Millisecond) != 1 {
+			t.Fatal("tick not armed")
+		}
+		if w := wireMessages(gr.batch()); len(w) != 1 || w[0].Payload.(message.CountDownPayload).Remaining != 1 {
+			t.Fatalf("%+v", w)
+		}
+		if gr.clock.Advance(499*time.Millisecond) != 0 {
+			t.Fatal("expired early")
+		}
+		gr.clock.Advance(time.Millisecond)
+		if r := wireOf(t, gr.batch(), message.TypeRoundResult).Message.Payload.(message.RoundResultPayload); r.Winner != "" {
+			t.Fatal(r)
+		}
+	})
+	t.Run("answer before deadline scores", func(t *testing.T) {
+		gr := newGameRoom(t, 2)
+		preload, answers := gr.start()
+		gr.readyAll(1)
+		gr.clock.Advance(29500 * time.Millisecond)
+		gr.batch()
+		gr.clock.Advance(200 * time.Millisecond)
+		gr.command(gr.members[1], answerMessage(gr.h.RoomID, answers[preload.ISRC]))
+		if r := wireOf(t, gr.batch(), message.TypeRoundResult).Message.Payload.(message.RoundResultPayload); r.Winner != gr.members[1].PlayerID {
+			t.Fatal(r)
+		}
+	})
+	t.Run("answer after deadline never scores", func(t *testing.T) {
+		gr := newGameRoom(t, 2)
+		preload, answers := gr.start()
+		gr.readyAll(1)
+		gr.clock.Advance(29500 * time.Millisecond)
+		gr.batch()
+		// The expiry fire and a correct answer race in the actor: either order
+		// must end the round with no winner and exactly one ROUND_RESULT.
+		gr.clock.Advance(700 * time.Millisecond)
+		gr.command(gr.members[1], answerMessage(gr.h.RoomID, answers[preload.ISRC]))
+		b := gr.batch()
+		r := wireOf(t, b, message.TypeRoundResult).Message.Payload.(message.RoundResultPayload)
+		if r.Winner != "" || r.Scores[gr.members[1].PlayerID] != 0 {
+			t.Fatalf("late answer scored: %+v", r)
+		}
+		// The losing input of the race is ignored: round 2 starts normally.
+		gr.readyAll(2)
+	})
+}

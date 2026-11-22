@@ -169,6 +169,7 @@ type lifecycleRoom struct {
 	timerC          <-chan time.Time
 	startGeneration uint64
 	starter         sc.Member
+	roundDeadline   time.Time
 	game            *game.Game
 	ready           map[string]bool
 }
@@ -239,6 +240,25 @@ func (r *lifecycleRoom) run() {
 		}
 	}
 }
+
+// removeMember deletes one membership and returns the events of that turn:
+// PLAYER_LEFT, arrival-order host succession and phase-specific game events.
+func (r *lifecycleRoom) removeMember(playerID string) []sc.Event {
+	delete(r.members, playerID)
+	events := []sc.Event{r.wire(message.TypePlayerLeft, message.PlayerLeftPayload{RoomID: r.handle.RoomID, PlayerID: playerID}, r.ordered())}
+	if r.host == playerID {
+		r.host = ""
+		if remaining := r.ordered(); len(remaining) > 0 {
+			r.host = remaining[0].PlayerID
+			events = append(events, r.wire(message.TypeHostChanged, message.HostChangedPayload{RoomID: r.handle.RoomID, PlayerID: r.host}, remaining))
+		}
+	}
+	if len(r.members) > 0 {
+		events = append(events, r.departed(playerID)...)
+	}
+	return events
+}
+
 func (r *lifecycleRoom) ordered() []sc.Member {
 	result := make([]sc.Member, 0, len(r.members))
 	for _, m := range r.members {
@@ -313,18 +333,7 @@ func (r *lifecycleRoom) apply(command any) bool {
 		events := []sc.Event{sc.RemovalResult{Token: cmd.Token, PlayerID: cmd.PlayerID, RequestID: cmd.RequestID}}
 		m, exists := r.members[cmd.PlayerID]
 		if exists && m.RequestID == cmd.RequestID {
-			delete(r.members, cmd.PlayerID)
-			events = append(events, r.wire(message.TypePlayerLeft, message.PlayerLeftPayload{RoomID: r.handle.RoomID, PlayerID: cmd.PlayerID}, r.ordered()))
-			if r.host == cmd.PlayerID {
-				r.host = ""
-				if remaining := r.ordered(); len(remaining) > 0 {
-					r.host = remaining[0].PlayerID
-					events = append(events, r.wire(message.TypeHostChanged, message.HostChangedPayload{RoomID: r.handle.RoomID, PlayerID: r.host}, remaining))
-				}
-			}
-			if len(r.members) > 0 {
-				events = append(events, r.departed(cmd.PlayerID)...)
-			}
+			events = append(events, r.removeMember(cmd.PlayerID)...)
 		}
 		ok := r.emit(events...)
 		return ok && len(r.members) > 0
@@ -340,6 +349,8 @@ func (r *lifecycleRoom) apply(command any) bool {
 		return r.readyToPlay(cmd)
 	case submitAnswer:
 		return r.submitAnswer(cmd)
+	case kickPlayer:
+		return r.kickPlayer(cmd)
 	}
 	return true
 }

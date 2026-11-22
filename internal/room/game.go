@@ -33,6 +33,10 @@ type submitAnswer struct {
 	member sc.Member
 	answer string
 }
+type kickPlayer struct {
+	member sc.Member
+	target string
+}
 
 // startResult is tagged with the start generation. A departure that cancels
 // the start increments the generation, so a late fetch result is discarded.
@@ -42,8 +46,7 @@ type startResult struct {
 	err        error
 }
 
-// gameCommand maps routed v1 commands to actor inputs. KICK_PLAYER is not
-// offered by v1 matchmaking rooms and is ignored (no membership change).
+// gameCommand maps routed v1 commands to actor inputs.
 func gameCommand(member sc.Member, msg message.Message) (any, bool) {
 	switch p := msg.Payload.(type) {
 	case *message.RoomPayload:
@@ -57,6 +60,10 @@ func gameCommand(member sc.Member, msg message.Message) (any, bool) {
 	case *message.SubmitAnswerPayload:
 		if msg.Type == message.TypeSubmitAnswer {
 			return submitAnswer{member, p.Answer}, true
+		}
+	case *message.KickPlayerPayload:
+		if msg.Type == message.TypeKickPlayer {
+			return kickPlayer{member, p.TargetPlayerID}, true
 		}
 	}
 	return nil, false
@@ -203,8 +210,10 @@ func (r *lifecycleRoom) readyToPlay(cmd readyToPlay) bool {
 // duplicate READY or a re-evaluation after departure cannot start it again.
 func (r *lifecycleRoom) startRound() sc.Event {
 	r.ready = make(map[string]bool)
-	r.game.StartRoundAt(r.clock.Now())
-	r.arm(time.Second)
+	now := r.clock.Now()
+	r.game.StartRoundAt(now)
+	r.roundDeadline = now.Add(RoundSeconds * time.Second)
+	r.armTick(now)
 	info := r.game.GetRoundStartInfo()
 	cards := info.LetterCards
 	if cards == nil {
@@ -216,6 +225,11 @@ func (r *lifecycleRoom) startRound() sc.Event {
 func (r *lifecycleRoom) submitAnswer(cmd submitAnswer) bool {
 	if !r.current(cmd.member) || r.state != sc.RoomPlaying || r.game == nil || !r.game.IsPlaying() {
 		return true
+	}
+	// An answer processed at/after the fixed deadline cannot score, even if
+	// the expiry tick has not been serviced yet: the round ends as a timeout.
+	if !r.clock.Now().Before(r.roundDeadline) {
+		return r.emit(r.endRound("")...)
 	}
 	if !r.game.SubmitAnswer(cmd.answer) {
 		return r.emit(r.broadcast(message.TypeWrongAnswer, message.WrongAnswerPayload{RoomID: r.handle.RoomID, PlayerID: cmd.member.PlayerID, WrongAnswer: cmd.answer}))
@@ -254,11 +268,12 @@ func (r *lifecycleRoom) timerFired() bool {
 	if !r.game.IsPlaying() {
 		return r.emit(r.abort(message.AbortInternalError))
 	}
-	remaining := r.game.RemainingTimeAt(r.clock.Now())
-	if remaining <= 0 {
+	now := r.clock.Now()
+	remaining := r.game.RemainingTimeAt(now)
+	if remaining <= 0 || !now.Before(r.roundDeadline) {
 		return r.emit(r.endRound("")...)
 	}
-	r.arm(time.Second)
+	r.armTick(now)
 	return r.emit(r.broadcast(message.TypeCountDown, message.CountDownPayload{RoomID: r.handle.RoomID, Remaining: remaining}))
 }
 
@@ -286,6 +301,30 @@ func (r *lifecycleRoom) departed(playerID string) []sc.Event {
 		}
 	}
 	return nil
+}
+
+// armTick schedules the next countdown tick, capped at the absolute round
+// deadline so a delayed tick never extends the fixed 30-second limit.
+func (r *lifecycleRoom) armTick(now time.Time) {
+	r.arm(min(time.Second, r.roundDeadline.Sub(now)))
+}
+
+// kickPlayer keeps the v1 KICK_PLAYER operation (only a kick UI is out of
+// scope). The host removes another current member in this actor turn: the
+// target receives PLAYER_KICKED first, then the usual departure events. The
+// request owner reacts to PLAYER_KICKED with a scoped Remove, which confirms
+// the already-absent membership and releases the target's connection for a
+// new request. A self-target is a no-op; LEAVE_ROOM is the self path.
+func (r *lifecycleRoom) kickPlayer(cmd kickPlayer) bool {
+	if !r.current(cmd.member) || cmd.member.PlayerID != r.host || cmd.target == r.host {
+		return true
+	}
+	target, ok := r.members[cmd.target]
+	if !ok {
+		return true
+	}
+	kicked := r.wire(message.TypePlayerKicked, message.PlayerKickedPayload{RoomID: r.handle.RoomID}, []sc.Member{target})
+	return r.emit(append([]sc.Event{kicked}, r.removeMember(cmd.target)...)...)
 }
 
 func (r *lifecycleRoom) arm(d time.Duration) {

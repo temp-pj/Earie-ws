@@ -162,3 +162,53 @@ func TestGameOverLeaveAndReuseOverWebSocket(t *testing.T) {
 		t.Fatalf("reuse: %+v %+v", na, nb)
 	}
 }
+
+func TestKickedPlayerCanRematchOnSameConnection(t *testing.T) {
+	store, err := loadMatchingCatalog("../../docs/specs/random-matchmaking/fixtures/catalog.json", "../../docs/specs/random-matchmaking/fixtures/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	registry, done := newMatchingRegistry(ctx, store)
+	server := httptest.NewServer(handleWebSocket(registry))
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		server.Close()
+	})
+	dial := func() *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"?protocolVersion=1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.CloseNow() })
+		return c
+	}
+	request := func(c *websocket.Conn) string {
+		id := uuid.NewString()
+		sendJSON(t, ctx, c, fmt.Sprintf(`{"type":"MATCH_REQUEST","payload":{"requestID":%q,"catalogVersion":"test-v1","category":{"decade":"any","artistType":"any","gender":"any","genre":"any"}}}`, id))
+		return id
+	}
+	a, b := dial(), dial()
+	request(a)
+	readWire(t, ctx, a, message.TypeMatchWaiting)
+	request(b)
+	readWire(t, ctx, b, message.TypeMatchWaiting)
+	wa := readWire(t, ctx, a, message.TypeWelcome).Payload.(*message.WelcomePayload)
+	wb := readWire(t, ctx, b, message.TypeWelcome).Payload.(*message.WelcomePayload)
+	sendJSON(t, ctx, a, fmt.Sprintf(`{"type":"KICK_PLAYER","payload":{"roomID":%q,"targetPlayerID":%q}}`, wa.RoomID, wb.PlayerID))
+	if p := readWire(t, ctx, b, message.TypePlayerKicked).Payload.(*message.RoomPayload); p.RoomID != wa.RoomID {
+		t.Fatal("PLAYER_KICKED roomID")
+	}
+	readWire(t, ctx, a, message.TypePlayerLeft)
+	// Immediately after the kick the connection is back in the lobby: a new
+	// request is accepted (not ALREADY_IN_ROOM) and assigned once cleanup ends.
+	id := request(b)
+	if p := readWire(t, ctx, b, message.TypeMatchWaiting).Payload.(*message.MatchWaitingPayload); p.RequestID != id {
+		t.Fatal("waiting correlation")
+	}
+	again := readWire(t, ctx, b, message.TypeWelcome).Payload.(*message.WelcomePayload)
+	if again.RequestID != id || again.PlayerID != wb.PlayerID {
+		t.Fatalf("%+v", again)
+	}
+}
