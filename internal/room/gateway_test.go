@@ -47,11 +47,14 @@ func awaitDone(t *testing.T, done <-chan struct{}) {
 		t.Fatal("Done deadline")
 	}
 }
-func newTestGateway(t *testing.T) (*Gateway, *testSink) {
+
+// newTestGateway defaults to a lookup that stays pending until the test replies
+// or the Room stops, so START_GAME ordering tests stay deterministic.
+func newTestGateway(t *testing.T, options ...Option) (*Gateway, *testSink) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	sink := &testSink{make(chan sc.EventBatch, 256)}
-	g := NewGateway(ctx, sink)
+	g := NewGateway(ctx, sink, append([]Option{WithSongs(newGateSongs())}, options...)...)
 	t.Cleanup(func() {
 		cancel()
 		g.mu.Lock()
@@ -174,7 +177,7 @@ func TestGatewayCapacityAndStartOrder(t *testing.T) {
 				}
 			}
 			start := func() {
-				if err := g.BeginStart(context.Background(), h.RoomID, cmd.Members[1]); err != nil {
+				if err := g.Command(context.Background(), h.RoomID, cmd.Members[1], startMessage(h.RoomID)); err != nil {
 					t.Fatal(err)
 				}
 			}

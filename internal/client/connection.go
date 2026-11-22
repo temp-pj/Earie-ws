@@ -13,8 +13,7 @@ import (
 )
 
 // Connection owns the socket, bounded FIFO, and its reader/writer/ping workers.
-// Room membership never closes its queue or its context. Legacy Client remains
-// available to old game tests until T7 removes the obsolete protocol.
+// Room membership never closes its queue or its context.
 type Connection struct {
 	ID         string
 	conn       socket

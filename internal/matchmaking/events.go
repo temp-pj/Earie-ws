@@ -80,6 +80,20 @@ func (m *Matchmaker) apply(batch sc.EventBatch) {
 	for _, cmd := range m.registry.Apply(forwarded, approved) {
 		m.remove(room, cmd)
 	}
+	// The Room already removed a kicked member in this batch, after PLAYER_KICKED
+	// was queued above. Treat the matched request like a cancellation: a scoped
+	// Remove confirms absence and blocks reassignment until that proof arrives,
+	// while a new requestID from the same connection is accepted (MATCH_WAITING).
+	for _, event := range batch.Events {
+		if w, ok := event.(sc.WireEvent); ok && w.Message.Type == message.TypePlayerKicked {
+			for _, target := range w.Recipients {
+				r := m.memberRequest(sc.RemoveCommand{RoomID: batch.RoomID, PlayerID: target.PlayerID, RequestID: target.RequestID})
+				if r != nil && r.state == sc.RequestMatched {
+					m.cancel(r, false)
+				}
+			}
+		}
+	}
 	for _, r := range removed {
 		m.registry.ClearMembership(batch.RoomID, r.member)
 		r.roomID, r.cleanupPending = "", false

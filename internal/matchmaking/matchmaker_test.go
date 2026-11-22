@@ -377,7 +377,8 @@ func realMatcher(t *testing.T) (*Matchmaker, *room.Gateway, *session.EventQueue,
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	q := session.NewEventQueue(ctx, 256)
-	g := room.NewGateway(ctx, q)
+	// Song lookup stays pending so start/registration ordering is deterministic.
+	g := room.NewGateway(ctx, q, room.WithSongs(pendingSongs{}))
 	m := New(ctx, g, catalog(t), q.Batches())
 	t.Cleanup(func() { cancel(); m.shutdown() })
 	a, _ := connect(m)
@@ -387,6 +388,16 @@ func realMatcher(t *testing.T) (*Matchmaker, *room.Gateway, *session.EventQueue,
 	m.apply(nextBatch(t, ctx, q))
 	m.apply(nextBatch(t, ctx, q))
 	return m, g, q, ra.member, ra.roomID
+}
+
+type pendingSongs struct{}
+
+func (pendingSongs) FetchSongs(ctx context.Context, _ string, _ musicv1.Category) ([]musicv1.ManifestSong, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func startRoom(ctx context.Context, g *room.Gateway, roomID string, host sc.Member) error {
+	return g.Command(ctx, roomID, host, message.Message{Type: message.TypeStartGame, Payload: &message.RoomPayload{RoomID: roomID}})
 }
 func TestRealRoomNinthRequestWaitsAndNoDoubleRegistration(t *testing.T) {
 	m, _, q, _, id := realMatcher(t)
@@ -417,13 +428,13 @@ func TestRealRoomStartRegistrationOrdering(t *testing.T) {
 			m, g, q, host, id := realMatcher(t)
 			c, out := connect(m)
 			if startFirst {
-				if err := g.BeginStart(m.ctx, id, host); err != nil {
+				if err := startRoom(m.ctx, g, id, host); err != nil {
 					t.Fatal(err)
 				}
 			}
 			r := submit(m, c, anyCategory)
 			if !startFirst {
-				if err := g.BeginStart(m.ctx, id, host); err != nil {
+				if err := startRoom(m.ctx, g, id, host); err != nil {
 					t.Fatal(err)
 				}
 			}
