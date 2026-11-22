@@ -43,9 +43,12 @@ func main() {
 
 // Both production and socket tests use this assembly. Synthetic fixtures are
 // supplied by tests only; missing deployment data never falls back to test-v1.
-func newMatchingRegistry(ctx context.Context, catalog *music.CatalogStore) (*session.Registry, <-chan struct{}) {
+// The catalog is the default song provider; options are applied after it, so
+// integration tests inject a song provider or clock through this same path
+// instead of a test-only branch. Production passes no options.
+func newMatchingRegistry(ctx context.Context, catalog *music.CatalogStore, options ...room.Option) (*session.Registry, <-chan struct{}) {
 	events := session.NewEventQueue(ctx, 256)
-	gateway := room.NewGateway(ctx, events, room.WithSongs(catalog))
+	gateway := room.NewGateway(ctx, events, append([]room.Option{room.WithSongs(catalog)}, options...)...)
 	matcher := matchmaking.New(ctx, gateway, catalog, events.Batches())
 	go matcher.Run()
 	return matcher.Registry(), matcher.Done()
