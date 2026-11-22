@@ -225,21 +225,7 @@ func (r *Registry) Apply(batch sc.EventBatch, approved []sc.Member) []sc.RemoveC
 				admit(event.Member, event.Admission)
 			}
 		case sc.RemovalResult:
-			e := r.players[event.PlayerID]
-			if e != nil && e.roomID == batch.RoomID && e.member.RequestID == event.RequestID {
-				e.membership = membership{}
-			}
-			if leave, ok := r.leaves[event.Token]; ok && leave.roomID == batch.RoomID && leave.member.PlayerID == event.PlayerID && leave.member.RequestID == event.RequestID {
-				delete(r.leaves, event.Token)
-				if current := r.connections[leave.connectionID]; current != nil {
-					for i := 0; i < leave.responses; i++ {
-						if err := current.transport.Send(serverMessage(message.TypeRoomLeft, message.RoomLeftPayload{RoomID: batch.RoomID})); err != nil {
-							current.transport.Stop()
-							break
-						}
-					}
-				}
-			}
+			r.removed(batch.RoomID, event)
 		case sc.WireEvent:
 			for _, member := range event.Recipients {
 				if e := r.players[member.PlayerID]; e != nil && e.roomID == batch.RoomID && e.member == member {
@@ -284,6 +270,71 @@ func (r *Registry) terminated(roomID string) {
 				e.transport.Stop()
 			}
 			delete(r.leaves, token)
+		}
+	}
+}
+
+// Connected prevents queued matcher inputs from recreating a closed session.
+func (r *Registry) Connected(id sc.ConnectionID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.connections[id] != nil
+}
+
+// CloseConnection initiates transport shutdown without waiting on network I/O.
+// Policy-aware transports send 1008 from their own writer worker.
+func (r *Registry) CloseConnection(id sc.ConnectionID, policy bool) {
+	r.mu.Lock()
+	if e := r.connections[id]; e != nil {
+		if p, ok := e.transport.(interface{ RejectPolicy() }); policy && ok {
+			p.RejectPolicy()
+		} else {
+			e.transport.Stop()
+		}
+	}
+	r.mu.Unlock()
+	r.Disconnect(id)
+}
+
+// ConfirmRemoval completes an already-proven scoped cleanup, e.g. a queued
+// leave overtaken by a cancellation's Remove result. It does not invent a room
+// revision or issue another Remove that could later time out a replacement.
+func (r *Registry) ConfirmRemoval(cmd sc.RemoveCommand) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.removed(cmd.RoomID, sc.RemovalResult{Token: cmd.Token, PlayerID: cmd.PlayerID, RequestID: cmd.RequestID})
+}
+
+// ClearMembership requires a matching Remove result or Room Done plus drain.
+// Complete every pending leave of this exact membership, including a leave
+// overtaken by cancellation cleanup, before a replacement may be dispatched.
+func (r *Registry) ClearMembership(roomID string, member sc.Member) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.removed(roomID, sc.RemovalResult{PlayerID: member.PlayerID, RequestID: member.RequestID})
+	for token, leave := range r.leaves {
+		if leave.roomID == roomID && leave.member == member {
+			r.removed(roomID, sc.RemovalResult{Token: token, PlayerID: member.PlayerID, RequestID: member.RequestID})
+		}
+	}
+}
+
+// Caller holds mu; neither membership nor leave records are keyed by player alone.
+func (r *Registry) removed(roomID string, result sc.RemovalResult) {
+	if e := r.players[result.PlayerID]; e != nil && e.roomID == roomID && e.member.RequestID == result.RequestID {
+		e.membership = membership{}
+	}
+	leave, ok := r.leaves[result.Token]
+	if !ok || leave.roomID != roomID || leave.member.PlayerID != result.PlayerID || leave.member.RequestID != result.RequestID {
+		return
+	}
+	delete(r.leaves, result.Token)
+	if current := r.connections[leave.connectionID]; current != nil {
+		for i := 0; i < leave.responses; i++ {
+			if err := current.transport.Send(serverMessage(message.TypeRoomLeft, message.RoomLeftPayload{RoomID: roomID})); err != nil {
+				current.transport.Stop()
+				break
+			}
 		}
 	}
 }

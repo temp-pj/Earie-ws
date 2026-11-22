@@ -1,6 +1,6 @@
 // Package matchmaking owns request state and room snapshots in one event loop.
-// T3 implements admission. Cancellation tombstones, cleanup timeouts and fault
-// quarantine are deliberately left to T4; game commands remain T7's boundary.
+// Cancellation and fault cleanup share the admission loop; game commands remain
+// T7's boundary.
 package matchmaking
 
 import (
@@ -19,15 +19,19 @@ import (
 var arrivalSequence atomic.Uint64
 
 type request struct {
-	connection   session.Connection
-	payload      message.MatchRequestPayload
-	member       sc.Member
-	state        sc.RequestState
-	token        sc.OperationToken
-	roomID       string
-	disconnected bool
-	rejected     map[string]sc.Revision
-	welcome      *message.WelcomePayload
+	connection     session.Connection
+	payload        message.MatchRequestPayload
+	member         sc.Member
+	state          sc.RequestState
+	token          sc.OperationToken
+	roomID         string
+	disconnected   bool
+	rejected       map[string]sc.Revision
+	welcome        *message.WelcomePayload
+	hasPayload     bool
+	failure        message.MatchFailureCode
+	cleanupPending bool
+	cancelReply    bool
 }
 
 type trackedRoom struct {
@@ -38,12 +42,17 @@ type trackedRoom struct {
 	publishToken    sc.OperationToken
 	cleanup         map[sc.OperationToken]sc.RemoveCommand
 	closing         bool
+	deadlines       map[sc.OperationToken]time.Time
+	closeDeadline   time.Time
+	closeReported   bool
 }
 
 type input struct {
 	connection   session.Connection
 	payload      message.MatchRequestPayload
 	disconnected bool
+	cancelID     string
+	remove       *sc.RemoveCommand
 }
 
 // Matchmaker methods enqueue only. Run is the sole owner of requests and rooms;
@@ -62,13 +71,16 @@ type Matchmaker struct {
 	requests    map[sc.ConnectionID]*request
 	rooms       map[string]*trackedRoom
 	failedPairs map[[2]sc.Sequence]bool
+	history     map[sc.ConnectionID]map[string]*request
+	now         func() time.Time
 }
 
 func New(ctx context.Context, gateway sc.RoomGateway, catalog *music.CatalogStore, events <-chan sc.EventBatch) *Matchmaker {
 	m := &Matchmaker{ctx: ctx, gateway: gateway, catalog: catalog, events: events,
+		history: make(map[sc.ConnectionID]map[string]*request), now: time.Now,
 		wake: make(chan struct{}, 1), done: make(chan struct{}), roomDone: make(chan string),
 		requests: make(map[sc.ConnectionID]*request), rooms: make(map[string]*trackedRoom), failedPairs: make(map[[2]sc.Sequence]bool)}
-	m.registry = session.NewRegistry(ctx, gateway, m, nil)
+	m.registry = session.NewRegistry(ctx, registryGateway{RoomGateway: gateway, owner: m}, m, nil)
 	return m
 }
 
@@ -79,12 +91,17 @@ func (m *Matchmaker) Match(ctx context.Context, c session.Connection, msg messag
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	payload, ok := msg.Payload.(*message.MatchRequestPayload)
-	if msg.Type != message.TypeMatchRequest || !ok || payload == nil {
-		// MATCH_CANCEL must not falsely acknowledge cleanup before T4 exists.
-		return sc.ErrClosed
+	switch p := msg.Payload.(type) {
+	case *message.MatchRequestPayload:
+		if msg.Type == message.TypeMatchRequest && p != nil {
+			return m.enqueue(input{connection: c, payload: *p})
+		}
+	case *message.MatchCancelPayload:
+		if msg.Type == message.TypeMatchCancel && p != nil {
+			return m.enqueue(input{connection: c, cancelID: p.RequestID})
+		}
 	}
-	return m.enqueue(input{connection: c, payload: *payload})
+	return sc.ErrClosed
 }
 
 func (m *Matchmaker) Disconnected(c session.Connection) {
@@ -98,7 +115,7 @@ func (m *Matchmaker) enqueue(in input) error {
 		return sc.ErrClosed
 	}
 	// Disconnect notifications cannot be dropped when the request queue is full.
-	if !in.disconnected && len(m.inputs) >= 256 {
+	if !in.disconnected && in.remove == nil && len(m.inputs) >= 256 {
 		return sc.ErrBackpressure
 	}
 	m.inputs = append(m.inputs, in)
@@ -114,7 +131,10 @@ func (m *Matchmaker) enqueue(in input) error {
 func (m *Matchmaker) Run() {
 	defer close(m.done)
 	defer m.shutdown()
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
 	for {
+		timer.Reset(m.nextTimeout())
 		select {
 		case <-m.ctx.Done():
 			return
@@ -127,6 +147,9 @@ func (m *Matchmaker) Run() {
 				m.accept(in)
 				m.schedule()
 			}
+		case <-timer.C:
+			m.expire(m.now())
+			m.schedule()
 		case batch := <-m.events:
 			m.apply(batch)
 			m.schedule()
@@ -151,50 +174,10 @@ func (m *Matchmaker) drain() {
 	}
 }
 
-func (m *Matchmaker) accept(in input) {
-	r := m.requests[in.connection.ID]
-	if in.disconnected {
-		if r != nil {
-			r.disconnected = true
-			if r.state != sc.RequestAssigning {
-				delete(m.requests, in.connection.ID)
-			}
-		}
-		return
-	}
-	if r != nil {
-		if r.payload.RequestID == in.payload.RequestID {
-			// T4 adds terminal replay/history and changed-payload policy closure.
-			if r.welcome != nil {
-				m.send(r, message.TypeWelcome, *r.welcome)
-			} else {
-				m.waiting(r)
-			}
-			return
-		}
-		code := message.AlreadyMatching
-		if r.state == sc.RequestMatched {
-			code = message.AlreadyInRoom
-		}
-		m.sendFailure(in.connection.ID, in.payload.RequestID, code)
-		return
-	}
-	if m.catalog == nil || m.catalog.ValidateRequest(in.payload.CatalogVersion, in.payload.Category) != nil {
-		m.sendFailure(in.connection.ID, in.payload.RequestID, message.InvalidCriteria)
-		return
-	}
-	r = &request{connection: in.connection, payload: in.payload, state: sc.RequestWaiting,
-		member: sc.Member{PlayerID: in.connection.PlayerID, RequestID: in.payload.RequestID, ArrivalSequence: sc.Sequence(arrivalSequence.Add(1))}, rejected: make(map[string]sc.Revision)}
-	m.requests[in.connection.ID] = r
-	// An initial-pair rejection keeps arrival order, but is not retried in a
-	// self-sustaining failure loop. New input or public room changes enable it.
-	clear(m.failedPairs)
-	m.waiting(r)
-}
-
 func (m *Matchmaker) send(r *request, kind string, payload any) {
 	if err := m.sendTo(r.connection.ID, kind, payload); err != nil {
 		r.disconnected = true
+		m.registry.CloseConnection(r.connection.ID, false)
 	}
 }
 func (m *Matchmaker) sendTo(id sc.ConnectionID, kind string, payload any) error {
@@ -204,14 +187,10 @@ func (m *Matchmaker) sendTo(id sc.ConnectionID, kind string, payload any) error 
 func (m *Matchmaker) waiting(r *request) {
 	m.send(r, message.TypeMatchWaiting, message.MatchWaitingPayload{RequestID: r.payload.RequestID})
 }
-func (m *Matchmaker) sendFailure(id sc.ConnectionID, requestID string, code message.MatchFailureCode) {
-	_ = m.sendTo(id, message.TypeMatchFailed, message.MatchFailedPayload{RequestID: requestID, Code: code})
-}
-
 func (m *Matchmaker) waitingRequests() []*request {
 	var waiting []*request
 	for _, r := range m.requests {
-		if r.state == sc.RequestWaiting && !r.disconnected {
+		if r.state == sc.RequestWaiting && !r.disconnected && !m.blocked(r.connection.ID) {
 			waiting = append(waiting, r)
 		}
 	}
@@ -248,14 +227,32 @@ func (m *Matchmaker) shutdown() {
 }
 
 func (m *Matchmaker) retire(id string) {
-	m.registry.Terminated(id)
-	for cid, r := range m.requests {
-		delete(r.rejected, id)
-		if r.roomID == id {
-			if r.state == sc.RequestAssigning && !r.disconnected {
-				m.sendFailure(cid, r.payload.RequestID, message.MatchInternalError)
+	// Done and drain prove cancelled memberships are absent; preserve their
+	// reusable connections while stopping genuinely admitted fault victims.
+	for _, records := range m.history {
+		for _, r := range records {
+			if r.roomID == id && r.state == sc.RequestCancelled {
+				m.registry.ClearMembership(id, r.member)
 			}
-			delete(m.requests, cid)
+		}
+	}
+	m.registry.Terminated(id)
+	for _, records := range m.history {
+		for _, r := range records {
+			delete(r.rejected, id)
+			if r.roomID != id {
+				continue
+			}
+			r.roomID, r.token, r.cleanupPending = "", 0, false
+			switch r.state {
+			case sc.RequestCancelled:
+				m.finishCancelled(r)
+			case sc.RequestAssigning:
+				m.fail(r, message.MatchInternalError)
+			case sc.RequestMatched:
+				r.disconnected = true
+				m.release(r)
+			}
 		}
 	}
 	delete(m.rooms, id)

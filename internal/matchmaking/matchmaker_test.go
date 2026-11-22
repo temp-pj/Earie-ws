@@ -45,6 +45,7 @@ type fakeGateway struct {
 	closes         []sc.CloseCommand
 	rejectRegister map[string]error
 	pairError      error
+	removeError    error
 }
 
 func (g *fakeGateway) CreateInitialPair(_ context.Context, c sc.CreateInitialPairCommand) (sc.RoomHandle, error) {
@@ -62,7 +63,7 @@ func (g *fakeGateway) Register(_ context.Context, c sc.RegisterCommand) error {
 }
 func (g *fakeGateway) Remove(_ context.Context, c sc.RemoveCommand) error {
 	g.removals = append(g.removals, c)
-	return nil
+	return g.removeError
 }
 func (g *fakeGateway) Publish(_ context.Context, c sc.PublishCommand) error {
 	g.publications = append(g.publications, c)
@@ -202,6 +203,11 @@ func TestOneActiveRequestAndDuplicateAdmission(t *testing.T) {
 	}
 	m.apply(pairBatch(g, 0, sc.AdmissionAccepted))
 	m.accept(input{connection: a, payload: newer})
+	if out.last().Payload.(message.MatchFailedPayload).Code != message.AlreadyMatching {
+		t.Fatal("failed ID did not replay its original failure")
+	}
+	newer.RequestID = uuid.NewString()
+	m.accept(input{connection: a, payload: newer})
 	if out.last().Payload.(message.MatchFailedPayload).Code != message.AlreadyInRoom {
 		t.Fatal("matched request replaced")
 	}
@@ -266,7 +272,9 @@ func TestRegistrationWelcomePrecedesWireAndRemovalAllowsNewRequest(t *testing.T)
 	if out.messages[n-2].Type != message.TypeWelcome || out.messages[n-1].Type != message.TypePlayerJoined {
 		t.Fatal("wire overtook WELCOME")
 	}
-	m.apply(advance(m, id, sc.RemovalResult{Token: session.NextOperationToken(), PlayerID: r.member.PlayerID, RequestID: r.member.RequestID}))
+	remove := sc.RemoveCommand{Token: session.NextOperationToken(), RoomID: id, PlayerID: r.member.PlayerID, RequestID: r.member.RequestID}
+	m.remove(m.rooms[id], remove)
+	m.apply(advance(m, id, sc.RemovalResult{Token: remove.Token, PlayerID: r.member.PlayerID, RequestID: r.member.RequestID}))
 	replacement := submit(m, a, anyCategory)
 	if replacement == r || replacement.member.ArrivalSequence <= r.member.ArrivalSequence {
 		t.Fatal("leave did not permit fresh request")

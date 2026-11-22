@@ -44,6 +44,7 @@ func (m *Matchmaker) schedule() {
 				continue
 			}
 			r.state, r.token, r.roomID = sc.RequestAssigning, token, s.RoomID
+			m.track(room, token)
 			break
 		}
 		if r.state != sc.RequestWaiting {
@@ -68,6 +69,7 @@ func (m *Matchmaker) schedule() {
 			for _, req := range []*request{r, other} {
 				req.state, req.token, req.roomID = sc.RequestAssigning, token, handle.RoomID
 			}
+			m.track(m.rooms[handle.RoomID], token)
 			m.watch(handle)
 			break
 		}
@@ -75,16 +77,26 @@ func (m *Matchmaker) schedule() {
 }
 
 func (m *Matchmaker) pending(roomID string, token sc.OperationToken, member sc.Member) *request {
-	for _, r := range m.requests {
-		if r.state == sc.RequestAssigning && r.roomID == roomID && r.token == token && r.member == member {
-			return r
+	if token == 0 {
+		return nil
+	}
+	for _, records := range m.history {
+		for _, r := range records {
+			if (r.state == sc.RequestAssigning || r.state == sc.RequestCancelled) && r.roomID == roomID && r.token == token && r.member == member {
+				return r
+			}
 		}
 	}
 	return nil
 }
 
 func (m *Matchmaker) closeRoom(room *trackedRoom) {
+	if room.closing {
+		return
+	}
 	room.closing = true
+	room.snapshot.Accepting = false
+	room.closeDeadline = m.now().Add(sc.OperationTimeout)
 	_, _ = m.gateway.Close(m.ctx, sc.CloseCommand{Token: session.NextOperationToken(), RoomID: room.handle.RoomID})
 }
 
@@ -97,6 +109,7 @@ func (m *Matchmaker) publish(room *trackedRoom) {
 		return
 	}
 	room.publishToken = session.NextOperationToken()
+	m.track(room, room.publishToken)
 	if err := m.gateway.Publish(m.ctx, sc.PublishCommand{Token: room.publishToken, RoomID: room.handle.RoomID}); err != nil {
 		m.closeRoom(room)
 	}
