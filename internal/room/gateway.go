@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"temp-ws/internal/game"
 	message "temp-ws/internal/message/v1"
 	music "temp-ws/internal/music/v1"
 	sc "temp-ws/internal/sessioncontract"
@@ -18,20 +20,34 @@ const commandQueueSize = 256
 
 var creationSequence atomic.Uint64
 
-// Gateway owns the v1 room registry. The legacy Hub is retained only for the
-// old game tests until T7 migrates game handling; the v1 endpoint never uses it.
-// Each lifecycleRoom exclusively owns its membership/state in run.
+// Gateway owns the v1 room registry. Each lifecycleRoom exclusively owns its
+// membership, admission and game state in run; mu protects only the map.
 type Gateway struct {
 	ctx   context.Context
 	sink  sc.EventSink
+	songs SongProvider
+	clock Clock
 	mu    sync.Mutex
 	rooms map[string]*lifecycleRoom
 }
 
 var _ sc.RoomGateway = (*Gateway)(nil)
 
-func NewGateway(ctx context.Context, sink sc.EventSink) *Gateway {
-	return &Gateway{ctx: ctx, sink: sink, rooms: make(map[string]*lifecycleRoom)}
+// Option configures dependencies injected by cmd/server or tests.
+type Option func(*Gateway)
+
+// WithSongs supplies the fixed-pool song lookup used by START_GAME.
+func WithSongs(p SongProvider) Option { return func(g *Gateway) { g.songs = p } }
+
+// WithClock replaces wall-clock preload/round timers (tests only need this).
+func WithClock(c Clock) Option { return func(g *Gateway) { g.clock = c } }
+
+func NewGateway(ctx context.Context, sink sc.EventSink, options ...Option) *Gateway {
+	g := &Gateway{ctx: ctx, sink: sink, clock: systemClock{}, rooms: make(map[string]*lifecycleRoom)}
+	for _, option := range options {
+		option(g)
+	}
+	return g
 }
 
 func (g *Gateway) CreateInitialPair(ctx context.Context, cmd sc.CreateInitialPairCommand) (sc.RoomHandle, error) {
@@ -44,7 +60,7 @@ func (g *Gateway) CreateInitialPair(ctx context.Context, cmd sc.CreateInitialPai
 		return sc.RoomHandle{}, sc.ErrClosed
 	}
 	roomCtx, cancel := context.WithCancel(g.ctx)
-	r := &lifecycleRoom{ctx: roomCtx, cancel: cancel, sink: g.sink,
+	r := &lifecycleRoom{ctx: roomCtx, cancel: cancel, sink: g.sink, songs: g.songs, clock: g.clock, results: make(chan startResult),
 		handle: sc.RoomHandle{RoomID: uuid.NewString(), CreationSequence: sc.Sequence(creationSequence.Add(1))},
 		done:   make(chan struct{}), commands: make(chan any, commandQueueSize),
 		members: make(map[string]sc.Member), state: sc.RoomInitializing,
@@ -112,14 +128,20 @@ func (g *Gateway) Forget(roomID string) error {
 	}
 }
 
-// BeginStart is the admission barrier for T7 game initialization. It is queued
-// in the SAME stream as Register. T7 must supply song loading/completion before
-// exposing game commands; this method alone does not start or announce a game.
-func (g *Gateway) BeginStart(ctx context.Context, roomID string, member sc.Member) error {
-	return g.enqueue(ctx, roomID, beginStart{member})
+// Command implements session.RoomCommander. Game commands share the Room's
+// FIFO with Register/Remove, so START_GAME is an admission barrier. A command
+// for a closed/forgotten Room is a late command and is ignored, not an error.
+func (g *Gateway) Command(ctx context.Context, roomID string, member sc.Member, msg message.Message) error {
+	cmd, ok := gameCommand(member, msg)
+	if !ok {
+		return nil
+	}
+	err := g.enqueue(ctx, roomID, cmd)
+	if errors.Is(err, sc.ErrClosed) || errors.Is(err, sc.ErrRoomNotFound) {
+		return nil
+	}
+	return err
 }
-
-type beginStart struct{ member sc.Member }
 
 type lifecycleRoom struct {
 	ctx      context.Context
@@ -137,6 +159,18 @@ type lifecycleRoom struct {
 	state      sc.RoomState
 	public     bool
 	snapshot   sc.RoomSnapshot
+	// Game state below is owned by run, like members. workers tracks song
+	// lookups; Done closes only after they exit. timer is the single deadline.
+	songs           SongProvider
+	clock           Clock
+	results         chan startResult
+	workers         sync.WaitGroup
+	timer           Timer
+	timerC          <-chan time.Time
+	startGeneration uint64
+	starter         sc.Member
+	game            *game.Game
+	ready           map[string]bool
 }
 
 func (r *lifecycleRoom) enqueue(ctx context.Context, cmd any) error {
@@ -169,6 +203,9 @@ func (r *lifecycleRoom) run() {
 	defer r.cancel()
 	defer func() {
 		r.stop(0)
+		r.workers.Wait()
+		r.disarm()
+		r.game, r.ready = nil, nil
 		r.state = sc.RoomClosed
 		clear(r.members)
 		r.gate.Lock()
@@ -189,6 +226,14 @@ func (r *lifecycleRoom) run() {
 				return
 			}
 			if !r.apply(cmd) {
+				return
+			}
+		case result := <-r.results:
+			if r.ctx.Err() != nil || !r.startFinished(result) {
+				return
+			}
+		case <-r.timerC:
+			if r.ctx.Err() != nil || !r.timerFired() {
 				return
 			}
 		}
@@ -277,6 +322,9 @@ func (r *lifecycleRoom) apply(command any) bool {
 					events = append(events, r.wire(message.TypeHostChanged, message.HostChangedPayload{RoomID: r.handle.RoomID, PlayerID: r.host}, remaining))
 				}
 			}
+			if len(r.members) > 0 {
+				events = append(events, r.departed(cmd.PlayerID)...)
+			}
 		}
 		ok := r.emit(events...)
 		return ok && len(r.members) > 0
@@ -286,25 +334,12 @@ func (r *lifecycleRoom) apply(command any) bool {
 		}
 		r.public = true
 		return r.emit(sc.Published{Token: cmd.Token})
-	case beginStart:
-		current, exists := r.members[cmd.member.PlayerID]
-		if !exists || current.RequestID != cmd.member.RequestID {
-			return true
-		}
-		code := message.RoomFailureCode("")
-		switch {
-		case cmd.member.PlayerID != r.host:
-			code = message.NotHost
-		case r.state != sc.RoomWaiting:
-			code = message.InvalidState
-		case len(r.members) < 2:
-			code = message.NotEnoughPlayers
-		}
-		if code != "" {
-			return r.emit(r.wire(message.TypeRoomCommandFailed, message.RoomCommandFailedPayload{RoomID: r.handle.RoomID, Command: message.TypeStartGame, Code: code}, []sc.Member{current}))
-		}
-		r.state = sc.RoomStarting
-		return r.emit()
+	case startGame:
+		return r.startGame(cmd)
+	case readyToPlay:
+		return r.readyToPlay(cmd)
+	case submitAnswer:
+		return r.submitAnswer(cmd)
 	}
 	return true
 }
