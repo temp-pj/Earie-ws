@@ -151,7 +151,7 @@ func (r *Registry) Route(id sc.ConnectionID, msg message.Message) error {
 	}
 	if r.commands == nil {
 		return sc.ErrClosed
-	} // game integration is T7
+	} // RoomCommander is the room Gateway in cmd/server
 	return r.commands.Command(r.ctx, roomID, e.member, msg)
 }
 func commandRoomID(msg message.Message) string {

@@ -1,6 +1,6 @@
 // Package matchmaking owns request state and room snapshots in one event loop.
-// Cancellation and fault cleanup share the admission loop; game commands remain
-// T7's boundary.
+// Cancellation and fault cleanup share the admission loop. Game commands bypass
+// this loop: the Registry routes them straight to the Room actor's FIFO.
 package matchmaking
 
 import (
@@ -80,7 +80,9 @@ func New(ctx context.Context, gateway sc.RoomGateway, catalog *music.CatalogStor
 		history: make(map[sc.ConnectionID]map[string]*request), now: time.Now,
 		wake: make(chan struct{}, 1), done: make(chan struct{}), roomDone: make(chan string),
 		requests: make(map[sc.ConnectionID]*request), rooms: make(map[string]*trackedRoom), failedPairs: make(map[[2]sc.Sequence]bool)}
-	m.registry = session.NewRegistry(ctx, registryGateway{RoomGateway: gateway, owner: m}, m, nil)
+	// The room gateway also accepts membership-scoped game commands (T7).
+	commands, _ := gateway.(session.RoomCommander)
+	m.registry = session.NewRegistry(ctx, registryGateway{RoomGateway: gateway, owner: m}, m, commands)
 	return m
 }
 

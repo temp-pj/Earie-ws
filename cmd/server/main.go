@@ -45,7 +45,7 @@ func main() {
 // supplied by tests only; missing deployment data never falls back to test-v1.
 func newMatchingRegistry(ctx context.Context, catalog *music.CatalogStore) (*session.Registry, <-chan struct{}) {
 	events := session.NewEventQueue(ctx, 256)
-	gateway := room.NewGateway(ctx, events)
+	gateway := room.NewGateway(ctx, events, room.WithSongs(catalog))
 	matcher := matchmaking.New(ctx, gateway, catalog, events.Batches())
 	go matcher.Run()
 	return matcher.Registry(), matcher.Done()

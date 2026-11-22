@@ -23,7 +23,6 @@
 // connections. Release tracking with Registry.ForgetRoom and Gateway.Forget only
 // after this barrier. No timeout or enqueue failure is proof of cleanup.
 //
-// T7 supplies RoomCommander and extends the v1 room actor's BeginStart admission
-// barrier with game initialization/completion. The old Client/Hub/Room protocol
-// is isolated from the v1 endpoint and retained for legacy game tests until T7.
+// The room Gateway implements RoomCommander: START_GAME is an admission barrier
+// in the Room FIFO, followed by game initialization/completion in that actor.
 package session
