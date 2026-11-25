@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"os"
 
 	"github.com/coder/websocket"
-	_ "github.com/lib/pq"
 
 	"temp-ws/internal/client"
 	"temp-ws/internal/matchmaking"
@@ -21,9 +19,6 @@ import (
 )
 
 func main() {
-	db := mustConnectDB()
-	defer func() { _ = db.Close() }()
-
 	catalog, err := loadMatchingCatalog(os.Getenv("CATALOG_PATH"), os.Getenv("SONG_MANIFEST_PATH"))
 	if err != nil {
 		log.Fatal("매칭 카탈로그 로드 실패: CATALOG_PATH 및 SONG_MANIFEST_PATH의 검증된 파일이 필요합니다")
@@ -66,25 +61,6 @@ func loadMatchingCatalog(catalogPath, manifestPath string) (*music.CatalogStore,
 	}
 	defer func() { _ = manifest.Close() }()
 	return music.LoadCatalog(catalog, manifest)
-}
-
-func mustConnectDB() *sql.DB {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		log.Fatal("DATABASE_URL 환경변수가 설정되지 않음")
-	}
-
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		log.Fatal("DB 연결 실패:", err)
-	}
-
-	if err := db.Ping(); err != nil {
-		log.Fatal("DB Ping 실패:", err)
-	}
-
-	log.Println("DB 연결 성공!")
-	return db
 }
 
 func handleWebSocket(registry *session.Registry) http.HandlerFunc {

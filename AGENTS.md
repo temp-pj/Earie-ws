@@ -38,7 +38,9 @@ Go 모듈은 temp-ws이며 go.mod는 Go 1.24.2를 지정한다. WebSocket 게임
 
 ## 로컬 실행과 비밀
 
-서버 실행에는 DATABASE_URL과 접근 가능한 PostgreSQL이 필요하다. run.sh는 .env를 읽어 go run ./cmd/server를 실행한다.
+서버 실행에는 CATALOG_PATH(서버 catalog.json)와 SONG_MANIFEST_PATH(같은 버전 manifest)가 필요하다. DB와 DATABASE_URL은 필요 없다. 누락·오류면 서버가 시작하지 않으며 synthetic fixture로 자동 대체하지 않는다.
+run.sh는 .env가 있으면 읽고, 두 변수를 export해 go run ./cmd/server를 실행한다. 둘 중 하나라도 없으면 실행하지 않는다.
+DATABASE_URL은 cmd/populate처럼 DB를 직접 다루는 작업에만 쓴다.
 .env, DB 연결 문자열, 인증 정보와 음악 원본 데이터를 문서/로그/커밋에 노출하지 않는다. 실제 DB 수정이나 populate 실행은 해당 작업에 명시적으로 포함된 경우에만 한다.
 
 ## PR
