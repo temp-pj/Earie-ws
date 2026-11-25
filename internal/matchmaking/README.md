@@ -62,7 +62,7 @@ clock/event 단위 테스트는 시간을 직접 전진시키고 결과 순서�
 
 ## 실행 데이터
 
-기존 DATABASE_URL 외에 서버 catalog.json의 `CATALOG_PATH`와 같은 버전 manifest의
+서버 catalog.json의 `CATALOG_PATH`와 같은 버전 manifest의
 `SONG_MANIFEST_PATH`를 설정한다. 서버 시작 시 T2 loader로 검증하며 누락/오류 시
 시작하지 않는다. synthetic fixture로 자동 대체하지 않는다. 테스트는 공개
 `test-v1` fixture를 명시적으로 주입하며 DB를 조회·변경하지 않는다.
